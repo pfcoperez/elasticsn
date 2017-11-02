@@ -3,7 +3,6 @@ package org.pfcoperez.elasticsn
 import scala.language.postfixOps
 
 import com.sksamuel.elastic4s.http.NoOpRequestConfigCallback
-import com.sksamuel.elastic4s.indexes.IndexDefinition
 import io.circe.Json
 import java.io.File
 import java.util.Date
@@ -32,7 +31,7 @@ object Upload extends App with Logging {
   object Settings {
     val transcriptsPath = "./transcripts"
     val httpUrl =  "elasticsearch://HOST:PORT?ssl=true"
-    val bulkSize = 500
+    val bulkSize = 2000
 
     object Credentials {
       val user: String = "USER"
@@ -60,6 +59,7 @@ object Upload extends App with Logging {
     )
 
     val index = "securitynow"
+    val fineGrainedIndex = "securitynow_words"
 
     val createIndicesQueries = Seq(
       createIndex(index) mappings (
@@ -81,28 +81,54 @@ object Upload extends App with Logging {
           keywordField("speaker"),
           textField("line")
         )
+      ),
+      createIndex(fineGrainedIndex) mappings (
+        mapping("episodeWord") as (
+          intField("episodeNumber"),
+          dateField("episodeDate"),
+          keywordField("speaker"),
+          textField("line"),
+          keywordField("word")
+        )
       )
     )
 
-    val insertQueries: Seq[IndexDefinition] = episodes flatMap {
+    val insertQueries = episodes.toStream flatMap {
       case episode @ Episode(header, text) =>
         val episodeInsert = indexInto(index / "episode") doc episode
-        val linesInsert = text map {
+        val linesAndWordsToInsert = text.toStream flatMap {
           case Entry(speaker, line) =>
             import header._
-            indexInto(index / "episodeLine") fields (
+            val lineIndexQuery = indexInto(index / "episodeLine") fields (
               "episodeNumber" -> number,
               "episodeDate" -> date,
               "speaker" -> speaker,
               "line" -> line
             )
+
+            val charactersToKeep = (('a' to 'z') ++ ('A' to 'Z') ++ ('0' to '9')).toSet
+
+            val wordIndexQueries = line.split(" ").toStream collect {
+              case word if word.nonEmpty =>
+                indexInto(fineGrainedIndex / "episodeWord" ) fields (
+                  "episodeNumber" -> number,
+                  "episodeDate" -> date,
+                  "speaker" -> speaker,
+                  "line" -> line,
+                  "word" -> word.trim.filter(charactersToKeep)
+                )
+            }
+
+            lineIndexQuery +: wordIndexQueries
         }
-        episodeInsert +: linesInsert
+        episodeInsert +: linesAndWordsToInsert
     }
 
-    val insertBulks = insertQueries.grouped(bulkSize).toList
+    //log.info(s"Generated ${insertQueries.size} queries")
 
-    val client ={
+    val insertBulks = insertQueries.grouped(bulkSize)
+
+    val client = {
 
       import Credentials._
 
@@ -132,7 +158,8 @@ object Upload extends App with Logging {
 
 
     if(asyncIndicesCreation.await(maxQueryTime)) {
-      log.info(s"About to index ${insertQueries.size} entries in ${insertBulks.size} bulks of size $bulkSize")
+      log.info("About to start indexing")
+      //log.info(s"About to index ${insertQueries.size} entries in ${insertBulks.size} bulks of size $bulkSize")
 
       insertBulks.zipWithIndex foreach { case (queries, bulkNo) =>
         log.info(s"Uploading bulk #$bulkNo")
