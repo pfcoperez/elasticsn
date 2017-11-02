@@ -1,0 +1,30 @@
+GET /securitynow/episode/_search
+{
+  "script_fields": {
+    "airedOn": {
+      "script": {
+        "source": "new Date(doc['header.date'].getValue())"
+      }
+    }
+  }, 
+  "_source": ["header.number", "header.audio"], 
+  "sort": [
+    {
+      "header.date": {
+        "order": "asc"
+      }
+    }
+  ], 
+  "query": {
+    "nested": {
+      "path": "text",
+      "query": {
+        "match_phrase": {
+          "text.line": "complexity is the enemy of security"
+        }
+      },
+      "inner_hits": {}
+      }
+    }
+  }
+}
