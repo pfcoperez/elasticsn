@@ -161,4 +161,5 @@ As it would happen with the *securitynow_words* index, the *episodeLine* mapping
 ## TODO
 
 - Factor `Upload` object into a generic indexer which should allow modularization when creating different views, in the form of indices and mappings.
+- Unit tests.
 - Add a "listener" aimed to make of this ETL a stream endpoint which could keep the index updated with the new shows.
