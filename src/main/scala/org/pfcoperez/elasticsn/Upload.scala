@@ -38,7 +38,7 @@ object Upload extends App with Logging {
       val password: String = "PASSWORD"
     }
 
-    val maxQueryTime = 4 hours
+    val maxDuration = 6 hours
 
   }
 
@@ -156,25 +156,28 @@ object Upload extends App with Logging {
       }
     } map (_.forall(identity))
 
-
-    if(asyncIndicesCreation.await(maxQueryTime)) {
-      log.info("About to start indexing")
-      //log.info(s"About to index ${insertQueries.size} entries in ${insertBulks.size} bulks of size $bulkSize")
-
-      insertBulks.zipWithIndex foreach { case (queries, bulkNo) =>
-        log.info(s"Uploading bulk #$bulkNo")
-
-        val uploadFuture = {
-          client.execute(bulk(queries:_*))
-        }
-
-        val res = uploadFuture.await(maxQueryTime)
-        log.info(s"Done with bulk #$bulkNo with ${res.failures.size} failures")
+    val asyncCreationAndIndexing: Future[Unit] = {
+      val firstStep = asyncIndicesCreation collect {
+        case true => log.info("Indices created")
       }
+      /* Using foldLeft here instead of `Future.sequence`
+         in order serialize bulks upload requests. That is, to avoid
+         uploading two or more bulks in parallel. */
+      (firstStep /: insertBulks.zipWithIndex) {
+        case (prevStep, (queries, bulkNo)) =>
+          for {
+            _ <- prevStep
+            bulkResult <- {
+              log.info(s"Uploading bulk #$bulkNo")
+              client.execute(bulk(queries:_*))
+            }
+          } yield {
+            log.info(s"Done with bulk #$bulkNo with ${bulkResult.failures.size} failures")
+          }
+      }
+    }
 
-      log.info("Bulk upload finished")
-
-    } else log.error("Couln't create index")
+    asyncCreationAndIndexing.await(maxDuration)
 
     log.info("DONE UPLOADING")
 
