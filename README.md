@@ -4,7 +4,7 @@ This is an ETL like program aimed to parse and index (in Elasticsearch) the [tra
 
 By doing so, it is possible to search for terms, phrases, ... within the text as well as extracting statistics.
 
-**e.g: When was the first time someone said "complexity is the enemy of security" in the show? On which episodes has been it repeated?**
+**e.g: When was the first time someone said "complexity is the enemy of security" in the show? On which episodes has it been repeated?**
 
 */tmp/phrase.json:*
 
@@ -53,13 +53,13 @@ curl -u USER:PASS \
 
 ![results](https://i.imgur.com/F3tE5AH.png)
 
-**e.g: Who are the show hosts? Who is intervenes often? Who is more talkative?**
+**e.g: Who are the show hosts? Who intervenes more often? Who is more talkative?**
 
 Just use Kibana!
 
 ![kibana stats](https://i.imgur.com/13uosUr.png)
 
-Both Leo and Steve are the main hosts and they spoke similar numbers of phrases per show, however, reviewing word count by author it is obvious that Steve leads
+Both Leo and Steve are the main hosts and they spoke similar numbers of sentences per podcast, however, reviewing word count by author it is obvious that Steve leads
 the discurse during each session.
 
 ## Indices created by the ETL Scala program
@@ -134,7 +134,7 @@ keeps the information of all the aired shows with all the interventions. It is j
             "type": "integer"
           },
           "speakers": {
-            "type": "text"
+            "type": "text"phrases
           },
           "text": {
             "type": "nested",
@@ -160,6 +160,7 @@ As it would happen with the *securitynow_words* index, the *episodeLine* mapping
 
 ## TODO
 
-- Factor `Upload` object into a generic indexer which should allow modularization when creating different views, in the form of indices and mappings.
 - Unit tests.
+- Factor `Upload` object into a generic indexer which should allow modularization when creating different views, in the form of indices and mappings.
+- Replace ad-hoc indices and types for Kibana with aggregation results from `securitynow/episode` to hugely improve performance (time & space).
 - Add a "listener" aimed to make of this ETL a stream endpoint which could keep the index updated with the new shows.
