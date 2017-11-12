@@ -19,16 +19,22 @@ import io.circe.generic.auto._
 import io.circe.Encoder
 import com.sksamuel.elastic4s.circe._
 
+import pureconfig.loadConfig
+
 import scala.concurrent.Future
 import scala.util.control.NonFatal
-import scala.util.{Success, Failure}
+import scala.util.Success
 import scala.concurrent.ExecutionContext.Implicits.global
 
+
 import Reader._
+import config.ConfigEntities._
 
 object Upload extends App with Logging {
 
-  import StaticSettings._
+  import com.typesafe.config.ConfigFactory
+
+  val Right(config) = loadConfig[SecurityNowConfig](ConfigFactory.defaultReference())
 
   implicit val dateEncoder: Encoder[Date] = new Encoder[Date] {
     def apply(d: Date): Json = {
@@ -71,7 +77,9 @@ object Upload extends App with Logging {
     )
   )
 
-  lazy val loadEpisodes: Future[List[Episode]] = Future.fromTry(loadDirectory(new File(transcriptsPath)))
+  lazy val loadEpisodes: Future[List[Episode]] = Future.fromTry(
+    loadDirectory(new File(config.securitynow.reader.transcriptsPath))
+  )
 
   def createIndices(implicit client: HttpClient): Future[Boolean] = Future.sequence {
     createIndicesQueries map { query =>
@@ -117,7 +125,7 @@ object Upload extends App with Logging {
         episodeInsert +: linesAndWordsToInsert
     }
 
-    val insertBulks = insertQueries.grouped(bulkSize)
+    val insertBulks = insertQueries.grouped(config.securitynow.uploader.bulkSize)
 
       /* Using foldLeft here instead of `Future.sequence`
      in order serialize bulks upload requests. That is, to avoid
@@ -149,17 +157,16 @@ object Upload extends App with Logging {
   } yield log.info("Indexing finished")
 
   implicit val client: HttpClient = {
+    import config.securitynow.uploader.connection._
 
-    val uri = ElasticsearchClientUri(httpUrl)
-
-    import Credentials._
+    val uri = ElasticsearchClientUri(s"elasticsearch://$url?ssl=true")
 
     val clientConfigCallback = new HttpClientConfigCallback {
       override def customizeHttpClient(httpClientBuilder: HttpAsyncClientBuilder): HttpAsyncClientBuilder = {
         val credentialsProvider = {
           val provider = new BasicCredentialsProvider
-          val credentials = new UsernamePasswordCredentials(user, password)
-          provider.setCredentials(AuthScope.ANY, credentials)
+          val userAndPass = new UsernamePasswordCredentials(credentials.user, credentials.password)
+          provider.setCredentials(AuthScope.ANY, userAndPass)
           provider
         }
         httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
@@ -168,7 +175,7 @@ object Upload extends App with Logging {
     HttpClient(uri, NoOpRequestConfigCallback, clientConfigCallback)
   }
 
-  uploadProcess.await(maxDuration)
+  uploadProcess.await(config.securitynow.uploader.timeout)
 
   client.close()
 
