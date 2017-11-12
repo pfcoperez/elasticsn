@@ -21,28 +21,14 @@ import com.sksamuel.elastic4s.circe._
 
 import scala.concurrent.Future
 import scala.util.control.NonFatal
-import scala.concurrent.duration._
+import scala.util.{Success, Failure}
 import scala.concurrent.ExecutionContext.Implicits.global
 
 import Reader._
 
 object Upload extends App with Logging {
 
-  object Settings {
-    val transcriptsPath = "./transcripts"
-    val httpUrl =  "elasticsearch://HOST:PORT?ssl=true"
-    val bulkSize = 2000
-
-    object Credentials {
-      val user: String = "USER"
-      val password: String = "PASSWORD"
-    }
-
-    val maxDuration = 6 hours
-
-  }
-
-  import Settings._
+  import StaticSettings._
 
   implicit val dateEncoder: Encoder[Date] = new Encoder[Date] {
     def apply(d: Date): Json = {
@@ -50,48 +36,55 @@ object Upload extends App with Logging {
     }
   }
 
-  loadDirectory(new File(transcriptsPath)) foreach { episodes =>
+  val index = "securitynow"
+  val fineGrainedIndex = "securitynow_words"
 
-    log.info(s"Loaded ${episodes.size} episodes")
-
-    val uri = ElasticsearchClientUri(
-      httpUrl
-    )
-
-    val index = "securitynow"
-    val fineGrainedIndex = "securitynow_words"
-
-    val createIndicesQueries = Seq(
-      createIndex(index) mappings (
-        mapping("episode") as (
-          intField("number"),
-          textField("title"),
-          nestedField("text") fields (
-            keywordField("speaker"),
-            textField("line")
-          ),
-          dateField("date"),
-          textField("speakers"),
-          textField("audioURL"),
-          textField("notesURL")
-        ),
-        mapping("episodeLine") as (
-          intField("episodeNumber"),
-          dateField("episodeDate"),
+  val createIndicesQueries = Seq(
+    createIndex(index) mappings (
+      mapping("episode") as (
+        intField("number"),
+        textField("title"),
+        nestedField("text") fields (
           keywordField("speaker"),
           textField("line")
-        )
+        ),
+        dateField("date"),
+        textField("speakers"),
+        textField("audioURL"),
+        textField("notesURL")
       ),
-      createIndex(fineGrainedIndex) mappings (
-        mapping("episodeWord") as (
-          intField("episodeNumber"),
-          dateField("episodeDate"),
-          keywordField("speaker"),
-          textField("line"),
-          keywordField("word")
-        )
+      mapping("episodeLine") as (
+        intField("episodeNumber"),
+        dateField("episodeDate"),
+        keywordField("speaker"),
+        textField("line")
+      )
+    ),
+    createIndex(fineGrainedIndex) mappings (
+      mapping("episodeWord") as (
+        intField("episodeNumber"),
+        dateField("episodeDate"),
+        keywordField("speaker"),
+        textField("line"),
+        keywordField("word")
       )
     )
+  )
+
+  lazy val loadEpisodes: Future[List[Episode]] = Future.fromTry(loadDirectory(new File(transcriptsPath)))
+
+  lazy val createIndices: Future[Boolean] = Future.sequence {
+    createIndicesQueries map { query =>
+      client.execute(query).map(_.acknowledged) recoverWith {
+        case NonFatal(e) =>
+          log.error(s"Failed to create index: ${query.name}")
+          //Future.failed(e)
+          Future.successful(false)
+      }
+    }
+  } map (_.forall(identity))
+
+  def indexAllEntries(episodes: List[Episode]): Future[Unit] = {
 
     val insertQueries = episodes.toStream flatMap {
       case episode @ Episode(header, text) =>
@@ -124,65 +117,59 @@ object Upload extends App with Logging {
         episodeInsert +: linesAndWordsToInsert
     }
 
-    //log.info(s"Generated ${insertQueries.size} queries")
-
     val insertBulks = insertQueries.grouped(bulkSize)
 
-    val client = {
-
-      import Credentials._
-
-      val clientConfigCallback = new HttpClientConfigCallback {
-        override def customizeHttpClient(httpClientBuilder: HttpAsyncClientBuilder): HttpAsyncClientBuilder = {
-          val credentialsProvider = {
-            val provider = new BasicCredentialsProvider
-            val credentials = new UsernamePasswordCredentials(user, password)
-            provider.setCredentials(AuthScope.ANY, credentials)
-            provider
-          }
-          httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
-        }
-      }
-      HttpClient(uri, NoOpRequestConfigCallback, clientConfigCallback)
-    }
-
-    val asyncIndicesCreation: Future[Boolean] = Future.sequence {
-      createIndicesQueries map { query =>
-        client.execute(query).map(_.acknowledged) recoverWith {
-          case NonFatal(e) =>
-            log.error(s"Failed to create index: $query")
-            Future.failed(e)
-        }
-      }
-    } map (_.forall(identity))
-
-    val asyncCreationAndIndexing: Future[Unit] = {
-      val firstStep = asyncIndicesCreation collect {
-        case true => log.info("Indices created")
-      }
       /* Using foldLeft here instead of `Future.sequence`
-         in order serialize bulks upload requests. That is, to avoid
-         uploading two or more bulks in parallel. */
-      (firstStep /: insertBulks.zipWithIndex) {
-        case (prevStep, (queries, bulkNo)) =>
-          for {
-            _ <- prevStep
-            bulkResult <- {
-              log.info(s"Uploading bulk #$bulkNo")
-              client.execute(bulk(queries:_*))
-            }
-          } yield {
-            log.info(s"Done with bulk #$bulkNo with ${bulkResult.failures.size} failures")
+     in order serialize bulks upload requests. That is, to avoid
+     uploading two or more bulks in parallel. */
+    (Future.successful(()) /: insertBulks.zipWithIndex) {
+      case (prevStep, (queries, bulkNo)) =>
+        for {
+          _ <- prevStep
+          bulkResult <- {
+            log.info(s"Uploading bulk #$bulkNo")
+            client.execute(bulk(queries:_*))
           }
-      }
+        } yield {
+          log.info(s"Done with bulk #$bulkNo with ${bulkResult.failures.size} failures")
+        }
     }
-
-    asyncCreationAndIndexing.await(maxDuration)
-
-    log.info("DONE UPLOADING")
-
-    client.close()
 
   }
+
+  lazy val uploadProcess = for {
+    episodes <- loadEpisodes andThen {
+      case Success(episodes) => log.info(s"Loaded ${episodes.size} episodes")
+    }
+    _ <- createIndices andThen {
+      case Success(true) => log.info("Indices screated successfully")
+      case Success(false) => log.error("Couldn't create some indices, trying to perform upload anyway...")
+    }
+    _ <- indexAllEntries(episodes)
+  } yield log.info("Indexing finished")
+
+  val client = {
+
+    val uri = ElasticsearchClientUri(httpUrl)
+
+    import Credentials._
+
+    val clientConfigCallback = new HttpClientConfigCallback {
+      override def customizeHttpClient(httpClientBuilder: HttpAsyncClientBuilder): HttpAsyncClientBuilder = {
+        val credentialsProvider = {
+          val provider = new BasicCredentialsProvider
+          val credentials = new UsernamePasswordCredentials(user, password)
+          provider.setCredentials(AuthScope.ANY, credentials)
+          provider
+        }
+        httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
+      }
+    }
+    HttpClient(uri, NoOpRequestConfigCallback, clientConfigCallback)
+  }
+
+  uploadProcess.await(maxDuration)
+
+  client.close()
 
 }
