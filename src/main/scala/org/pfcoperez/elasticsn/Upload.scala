@@ -73,7 +73,7 @@ object Upload extends App with Logging {
 
   lazy val loadEpisodes: Future[List[Episode]] = Future.fromTry(loadDirectory(new File(transcriptsPath)))
 
-  lazy val createIndices: Future[Boolean] = Future.sequence {
+  def createIndices(implicit client: HttpClient): Future[Boolean] = Future.sequence {
     createIndicesQueries map { query =>
       client.execute(query).map(_.acknowledged) recoverWith {
         case NonFatal(e) =>
@@ -84,7 +84,7 @@ object Upload extends App with Logging {
     }
   } map (_.forall(identity))
 
-  def indexAllEntries(episodes: List[Episode]): Future[Unit] = {
+  def indexAllEntries(episodes: List[Episode])(implicit client: HttpClient): Future[Unit] = {
 
     val insertQueries = episodes.toStream flatMap {
       case episode @ Episode(header, text) =>
@@ -137,7 +137,7 @@ object Upload extends App with Logging {
 
   }
 
-  lazy val uploadProcess = for {
+  def uploadProcess(implicit client: HttpClient) = for {
     episodes <- loadEpisodes andThen {
       case Success(episodes) => log.info(s"Loaded ${episodes.size} episodes")
     }
@@ -148,7 +148,7 @@ object Upload extends App with Logging {
     _ <- indexAllEntries(episodes)
   } yield log.info("Indexing finished")
 
-  val client = {
+  implicit val client: HttpClient = {
 
     val uri = ElasticsearchClientUri(httpUrl)
 
