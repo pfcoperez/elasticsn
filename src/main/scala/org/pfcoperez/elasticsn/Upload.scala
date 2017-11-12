@@ -1,33 +1,29 @@
 package org.pfcoperez.elasticsn
 
 import scala.language.postfixOps
-
 import com.sksamuel.elastic4s.http.NoOpRequestConfigCallback
 import io.circe.Json
 import java.io.File
 import java.util.Date
-import org.apache.http.auth.{ AuthScope, UsernamePasswordCredentials }
-import org.apache.http.impl.client.BasicCredentialsProvider
 
+import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
+import org.apache.http.impl.client.BasicCredentialsProvider
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
 import org.elasticsearch.client.RestClientBuilder.HttpClientConfigCallback
-
 import com.sksamuel.elastic4s.ElasticsearchClientUri
 import com.sksamuel.elastic4s.http.HttpClient
 import com.sksamuel.elastic4s.http.ElasticDsl._
 import io.circe.generic.auto._
 import io.circe.Encoder
 import com.sksamuel.elastic4s.circe._
-
 import pureconfig.loadConfig
 
 import scala.concurrent.Future
 import scala.util.control.NonFatal
 import scala.util.Success
 import scala.concurrent.ExecutionContext.Implicits.global
-
-
 import Reader._
+import com.sksamuel.elastic4s.analyzers.EnglishLanguageAnalyzer
 import config.ConfigEntities._
 
 object Upload extends App with Logging {
@@ -52,7 +48,7 @@ object Upload extends App with Logging {
         textField("title"),
         nestedField("text") fields (
           keywordField("speaker"),
-          textField("line")
+          textField("line") analyzer EnglishLanguageAnalyzer
         ),
         dateField("date"),
         textField("speakers"),
@@ -63,7 +59,7 @@ object Upload extends App with Logging {
         intField("episodeNumber"),
         dateField("episodeDate"),
         keywordField("speaker"),
-        textField("line")
+        textField("line") analyzer EnglishLanguageAnalyzer
       )
     ),
     createIndex(fineGrainedIndex) mappings (
@@ -85,7 +81,7 @@ object Upload extends App with Logging {
     createIndicesQueries map { query =>
       client.execute(query).map(_.acknowledged) recoverWith {
         case NonFatal(e) =>
-          log.error(s"Failed to create index: ${query.name}")
+          log.error(s"Failed to create index: ${query.name}\n$e")
           //Future.failed(e)
           Future.successful(false)
       }
